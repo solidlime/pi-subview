@@ -66,8 +66,8 @@ const DEFAULT_LIST_LIMIT = 40;
 const ALL_LIST_LIMIT = 200;
 
 const TOTAL_ROWS = 36; // 設計書 §1.5 の行バジェット
-const LIST_ROWS = 9;
-const STREAM_ROWS = TOTAL_ROWS - 14; // 22
+const LIST_ROWS = 5;
+const STREAM_ROWS = TOTAL_ROWS - LIST_ROWS - 5; // 26（chrome 3行 + 区切り2行 + ラン一覧 LIST_ROWS を引いて TOTAL_ROWS を維持）
 
 const TERMINAL_STATES = new Set(["complete", "failed", "stopped", "rejected"]);
 
@@ -589,6 +589,7 @@ class SubagentViewerComponent {
   private runs: RunRec[] = [];
   private selectedRunId: string | null = null;
   private cursor = 0;
+  private listTop = 0; // ラン一覧ビューポート先頭の行 index
   private showAll = false;
   private follow = true;
   private scroll = 0;
@@ -648,6 +649,7 @@ class SubagentViewerComponent {
   private selectAt(i: number): void {
     if (i < 0 || i >= this.runs.length) return;
     this.cursor = i;
+    this.clampListTop();
     const id = this.runs[i].runId;
     if (id !== this.selectedRunId) {
       this.selectedRunId = id;
@@ -669,6 +671,15 @@ class SubagentViewerComponent {
     this.scheduleRender(true);
   }
 
+  /** 選択行が必ず LIST_ROWS 行のビューポート内に収まるよう listTop を clamp（scroll into view）。 */
+  private clampListTop(): void {
+    if (this.cursor < this.listTop) this.listTop = this.cursor;
+    else if (this.cursor >= this.listTop + LIST_ROWS) this.listTop = this.cursor - LIST_ROWS + 1;
+    const maxTop = Math.max(0, this.runs.length - LIST_ROWS);
+    if (this.listTop > maxTop) this.listTop = maxTop;
+    if (this.listTop < 0) this.listTop = 0;
+  }
+
   // ---- ポーリング ----
 
   private pollStatus(): void {
@@ -684,6 +695,7 @@ class SubagentViewerComponent {
       const idx = this.runs.findIndex((r) => r.runId === this.selectedRunId);
       if (idx >= 0) {
         this.cursor = idx;
+        this.clampListTop();
         this.artifactsDeleted = false;
       } else if (existsSync(join(ASYNC_DIR, this.selectedRunId))) {
         // showAll 切替などで単に一覧から外れた → 隣へ移る
@@ -692,6 +704,7 @@ class SubagentViewerComponent {
       } else {
         this.artifactsDeleted = true; // artifacts 消失。バッファは保持して読める状態を保つ
         this.cursor = this.runs.length ? Math.min(this.cursor, this.runs.length - 1) : 0;
+        this.clampListTop();
       }
     } else if (this.runs.length) {
       this.selectAt(0);
@@ -833,8 +846,9 @@ class SubagentViewerComponent {
     out.push(truncateToWidth(LEGEND, this.width, "", false) + R);
     out.push("─".repeat(this.width + 8));
 
+    const visible = this.runs.slice(this.listTop, this.listTop + LIST_ROWS);
     for (let i = 0; i < LIST_ROWS; i += 1) {
-      const r = this.runs[i];
+      const r = visible[i];
       out.push(r ? runRow(r, r.runId === this.selectedRunId) : "");
     }
     out.push("─".repeat(this.width + 8));
