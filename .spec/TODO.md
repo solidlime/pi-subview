@@ -18,4 +18,4 @@
 
 ## 完了メモ
 - T002〜T007 は 1afc934（feat/todo-cleanup）で一括消化。#011 実装 → #003 レビュー PASS（BLOCK 0）。
-- 残る NIT: strip regex の CSI 私用パラメータ（<=>）・previewArgs 切断点のシーケンス断片。次回触り時で可。
+- 残NIT全消化（2026-09-26 3844a00）: CSI 私用パラメータ対応・previewArgs 先 strip+末尾断片除去・dropExisting 冪等化。
