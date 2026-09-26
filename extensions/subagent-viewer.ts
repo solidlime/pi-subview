@@ -307,7 +307,19 @@ function previewArgs(args: any): string {
     s = String(args);
   }
   if (s === undefined || s === null) s = "";
-  return s.length > TOOL_ARGS_MAX_CHARS ? `${s.slice(0, TOOL_ARGS_MAX_CHARS)}…` : s;
+  s = stripUnsafeAnsi(s); // 切断前に strip（NIT#4）
+  if (s.length > TOOL_ARGS_MAX_CHARS) {
+    s = s.slice(0, TOOL_ARGS_MAX_CHARS);
+    // 切断点が SGR 途中だった場合、尻に残る未閉鎖シーケンス断片を捨てる（NIT#4）
+    const open = s.lastIndexOf("\x1b");
+    if (s.indexOf("\x1b", open + 1) < 0 && open >= 0 && !/^\x1b\[[0-9;:]*m$/.test(s.slice(open))) {
+      // 末尾 ESC が完全 SGR で終わっていなければ、そのシーケンスの開始以降を削る
+      const tail = s.slice(open);
+      if (!/^\x1b\[[0-9;:<=>?]*m/.test(tail)) s = s.slice(0, open);
+    }
+    s += "…";
+  }
+  return s;
 }
 
 /**
@@ -316,7 +328,7 @@ function previewArgs(args: any): string {
  */
 function stripUnsafeAnsi(s: string): string {
   return s.replace(
-    /\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]/g,
+    /\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b\[[0-9;:<=>?]*[ -/]*[@-~]|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]/g,
     (m) => (m.startsWith("\x1b[") && m.endsWith("m") ? m : ""), // CSI のうち SGR のみ残す
   );
 }
@@ -352,7 +364,7 @@ function parseRecord(rec: any, stepAgents: Map<number, string>): Entry[] {
           } else if (p.type === "text" && typeof p.text === "string" && p.text.trim()) {
             out.push({ kind: "text", text: p.text, at, agent });
           } else if (p.type === "toolCall") {
-            out.push({ kind: "toolCall", tool: String(p.name ?? "?"), callId: String(p.id ?? ""), argText: stripUnsafeAnsi(previewArgs(p.arguments)), at, agent });
+            out.push({ kind: "toolCall", tool: String(p.name ?? "?"), callId: String(p.id ?? ""), argText: previewArgs(p.arguments), at, agent });
           }
         }
         return out;
@@ -1040,8 +1052,9 @@ class SubagentViewerComponent {
     this.statusTimer = this.eventsTimer = this.pendingRender = undefined;
   }
 
-  /** 二重起動時に旧オーバーレイを閉じる（T003）。dispose 後に done で host にクローズを伝える。 */
+  /** 二重起動時に旧オーバーレイを閉じる（T003）。done 二重発火を dispose 済みなら抑止。 */
   dropExisting(): void {
+    if (this.disposed) return; // すでに閉じている → done 済み、二重発火しない
     this.dispose();
     this.done(undefined);
   }
