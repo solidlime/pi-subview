@@ -17,3 +17,8 @@
 - 単一ファイル維持（1コミット100行ルールの例外＝単一ファイル要件・実測 1254行）
 - ポーリング方式（コマンドハンドラ内で起動、dispose() で停止。ホスト契約上 done() 経由の dispose が担保のため）
 - #003 レビューの OPTIONAL/NIT は初期リリースでは対応しない（BLOCK 0 件。次点は T002 ちらつき修正＝1行）
+
+## 追加（2026-09-26 TODO消化）
+- pollStatus は変化検出（statusSnapshot 比較）を挟まないと毎秒再描画でちらつく。代償: status.json 不変中は duration/deadline 凍結
+- SGR 以外 ANSI strip は parseRecord 段階で 1 回だけかけるのが正着（描画ごとの再処理を回避）
+- tsconfig.json をコミットしないと「tsc 0 errors」が /tmp 依存になる（再現性の教訓）

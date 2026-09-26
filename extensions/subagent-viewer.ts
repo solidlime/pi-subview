@@ -46,12 +46,14 @@ const WIDGET_KEY = "subagent-viewer"; // subagent-async / subagent-fleet-status 
 const POLL_STATUS_MS = 1000; // ラン一覧（readdir + status.json）
 const POLL_EVENTS_MS = 500; // 選択中ランの events.jsonl 追記
 const RENDER_THROTTLE_MS = 250; // 描画再送のスロットル
+const STATUS_CACHE_SWEEP_MS = 60 * 1000; // statusCache を全消去する間隔（T005）
 
 const INITIAL_FULL_READ_BYTES = 4 * 1024 * 1024; // これ以下なら初回に全文
 const INITIAL_TAIL_BYTES = 2 * 1024 * 1024; // これ以上は末尾 2MiB から
 
 const MAX_BUFFER_ENTRIES = 4000; // 1 ランあたりのリングバッファ件数
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024; // 同 バイト上限
+const MAX_REMAINDER_BYTES = 16 * 1024 * 1024; // 未完行 remainder の上限、超過で破棄（T004）
 
 const TOOL_RESULT_MAX_CHARS = 400;
 const TOOL_ARGS_MAX_CHARS = 160;
@@ -309,6 +311,17 @@ function previewArgs(args: any): string {
 }
 
 /**
+ * SGR（\x1b[…m）以外の ANSI エスケープと C0 制御文字を除去する（T006）。
+ * 下位 agent が書いた任意文字列に \x1b[2J 等が混じっても ansi-to-html を壊さないため。
+ */
+function stripUnsafeAnsi(s: string): string {
+  return s.replace(
+    /\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]/g,
+    (m) => (m.startsWith("\x1b[") && m.endsWith("m") ? m : ""), // CSI のうち SGR のみ残す
+  );
+}
+
+/**
  * events.jsonl 1 レコード → Entry[]。
  * system は必ず無視（content にシステムプロンプト全文が入り得る）。
  * message_start / tool_execution_* / turn_* は内容を使わない（設計書 §5.2）。
@@ -339,7 +352,7 @@ function parseRecord(rec: any, stepAgents: Map<number, string>): Entry[] {
           } else if (p.type === "text" && typeof p.text === "string" && p.text.trim()) {
             out.push({ kind: "text", text: p.text, at, agent });
           } else if (p.type === "toolCall") {
-            out.push({ kind: "toolCall", tool: String(p.name ?? "?"), callId: String(p.id ?? ""), argText: previewArgs(p.arguments), at, agent });
+            out.push({ kind: "toolCall", tool: String(p.name ?? "?"), callId: String(p.id ?? ""), argText: stripUnsafeAnsi(previewArgs(p.arguments)), at, agent });
           }
         }
         return out;
@@ -351,7 +364,7 @@ function parseRecord(rec: any, stepAgents: Map<number, string>): Entry[] {
             kind: "toolResult",
             tool: String(m.toolName ?? "?"),
             callId: String(m.toolCallId ?? ""),
-            text: shortenResult(raw),
+            text: stripUnsafeAnsi(shortenResult(raw)),
             isError: m.isError === true,
             origChars: raw.length,
             at,
@@ -366,6 +379,11 @@ function parseRecord(rec: any, stepAgents: Map<number, string>): Entry[] {
   }
 }
 
+/** remainder が上限超過なら破棄する（T004）。壊れた巨大未完行で無制限に増えるのを防ぐ。 */
+function capRemainder(cs: TailCursor): void {
+  if (cs.remainder.length > MAX_REMAINDER_BYTES) cs.remainder = Buffer.alloc(0);
+}
+
 /**
  * 追記バイトをカーソルに流し込み、完成した行だけを Entry[] にする。
  * remainder を Buffer のまま持つので UTF-8 の途中で切れても壊れない（設計書 §3.3）。
@@ -375,10 +393,12 @@ function drainCursor(cs: TailCursor, chunk: Buffer): Entry[] {
   const idx = joined.lastIndexOf(0x0a);
   if (idx < 0) {
     cs.remainder = Buffer.from(joined);
+    capRemainder(cs);
     return [];
   }
   const text = joined.subarray(0, idx).toString("utf8");
   cs.remainder = Buffer.from(joined.subarray(idx + 1));
+  capRemainder(cs);
   const lines = text.split("\n");
   if (cs.skipFirst) {
     lines.shift(); // 末尾 2MiB から始めたときの途中行を捨てる
@@ -533,7 +553,7 @@ const HELP_LINES: string[] = [
   "  x                  toolCall / toolResult 行の表示切替",
   "  a                  active+直近24h ⇄ 全件",
   "  i                  info パネル（i で閉じる）",
-  "  r                  全キャッシュ破棄して読み直す（カーソルも 0 に戻す）",
+  "  r                  全キャッシュ破棄して読み直す（末尾 follow に戻す）",
   "  ?                  このヘルプ（? で閉じる）",
   "",
   "表示について:",
@@ -580,6 +600,7 @@ class SubagentViewerComponent {
   private eventsTimer: NodeJS.Timeout | undefined;
   private pendingRender: NodeJS.Timeout | undefined;
   private lastEmitAt = 0;
+  private lastCacheSweep = 0;
   private disposed = false;
 
   private readonly tui: TUI;
@@ -640,6 +661,12 @@ class SubagentViewerComponent {
 
   private pollStatus(): void {
     if (this.disposed) return;
+    const before = this.statusSnapshot();
+    const now = Date.now();
+    if (now - this.lastCacheSweep >= STATUS_CACHE_SWEEP_MS) {
+      this.lastCacheSweep = now;
+      statusCache.clear(); // T005: 溜まった snapshot を定期全消去（大は小を兼ねる）
+    }
     this.refreshRuns();
     if (this.selectedRunId) {
       const idx = this.runs.findIndex((r) => r.runId === this.selectedRunId);
@@ -657,8 +684,20 @@ class SubagentViewerComponent {
     } else if (this.runs.length) {
       this.selectAt(0);
     }
-    this.linesDirty = true;
-    this.scheduleRender(false);
+    if (this.statusSnapshot() !== before) {
+      this.linesDirty = true;
+      this.scheduleRender(false);
+    }
+  }
+
+  /** pollStatus が実際に変化したか判定するための状態要約（T002）。 */
+  private statusSnapshot(): string {
+    return [
+      this.selectedRunId ?? "",
+      this.cursor,
+      this.artifactsDeleted ? 1 : 0,
+      this.runs.map((r) => `${r.runId}:${r.state}:${r.active ? 1 : 0}:${r.lastUpdate}`).join(","),
+    ].join("|");
   }
 
   private pollEvents(initial: boolean): void {
@@ -738,6 +777,8 @@ class SubagentViewerComponent {
     this.evicted = 0;
     this.cs = null;
     this.artifactsDeleted = false;
+    this.follow = true; // T007: 読み直し後は末尾 follow に戻す（help の r 説明と一致）
+    this.scroll = 0;
     this.linesDirty = true;
     this.pollStatus();
     this.pollEvents(true);
@@ -998,6 +1039,12 @@ class SubagentViewerComponent {
     if (this.pendingRender) clearTimeout(this.pendingRender);
     this.statusTimer = this.eventsTimer = this.pendingRender = undefined;
   }
+
+  /** 二重起動時に旧オーバーレイを閉じる（T003）。dispose 後に done で host にクローズを伝える。 */
+  dropExisting(): void {
+    this.dispose();
+    this.done(undefined);
+  }
 }
 
 // ============================================================
@@ -1147,6 +1194,8 @@ function runSelfTest(runDir: string): SelfTestResult {
 // G. 登録
 // ============================================================
 
+let activeViewer: SubagentViewerComponent | null = null; // T003: 二重起動防止（生存中のオーバーレイ）
+
 async function openViewer(ctx: ExtensionCommandContext, args: string): Promise<void> {
   if (typeof ctx.ui.custom !== "function") {
     ctx.ui.notify("このホストはカスタム UI (ctx.ui.custom) 非対応", "warning");
@@ -1157,9 +1206,21 @@ async function openViewer(ctx: ExtensionCommandContext, args: string): Promise<v
     ctx.ui.notify(HELP_LINES.map((l) => l.replace(/\x1b\[[0-9;]*m/g, "")).join("\n"), "info");
     return;
   }
+  if (activeViewer) activeViewer.dropExisting(); // T003: 二重起動時は旧オーバーレイを先に閉じる
   try {
     await ctx.ui.custom<undefined>(
-      (tui, _theme, _keybindings, done) => new SubagentViewerComponent(tui, done, prefix),
+      (tui, _theme, _keybindings, done) => {
+        const inst = new SubagentViewerComponent(
+          tui,
+          (r) => {
+            if (activeViewer === inst) activeViewer = null;
+            done(r);
+          },
+          prefix,
+        );
+        activeViewer = inst;
+        return inst;
+      },
       { overlay: true, overlayOptions: { width: 92 } },
     );
   } catch (err) {
@@ -1249,6 +1310,7 @@ export {
   newCursor,
   parseRecord,
   runSelfTest,
+  stripUnsafeAnsi,
   SubagentViewerComponent,
 };
 export type { Entry, RunRec, TailCursor };

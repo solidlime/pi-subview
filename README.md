@@ -13,7 +13,7 @@ pi-web ブラウザで pi-subagents の非同期ラン（thinking / toolCall / t
 ## 運用
 - pi 本体への導入: `cp extensions/subagent-viewer.ts ~/.pi/agent/extensions/`（開発ソースは本リポジトリで管理）
 - 設計書・検収記録: `research/subagent-viewer-design-20260926.md`（§10 実装追補）
-- 2026-09-26 検収完了: tsc --noEmit PASS / pi 0.87.1 headless ロード / 実データ 3.17MB スモーク / pi-web 実機 e2e 全キー / レビュー PASS（BLOCK 0 件）
+- 2026-09-26 検収完了: tsc --noEmit PASS（tsconfig.json コミット済み・再現可能） / pi 0.87.1 headless ロード / 実データ 3.17MB スモーク / pi-web 実機 e2e 全キー / レビュー PASS（BLOCK 0 件）
 
 ## 識別
 - project: pi-subview
