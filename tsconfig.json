@@ -1,0 +1,20 @@
+{
+  // subagent-viewer.ts の型検証用。pi 拡張は jiti 素読み（ビルド不要）なので noEmit のみ。
+  // @earendil-works/* は pi 本体同梱の実型へ symlink で解決する（node_modules/ 参照）。
+  // typescript 本体も node_modules/tsc (symlink) 経由: node node_modules/tsc -p .
+  "compilerOptions": {
+    "strict": true,
+    "skipLibCheck": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2024",
+    "lib": ["es2024", "dom"],
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": { "@earendil-works/*": ["node_modules/@earendil-works/*"] }
+  },
+  "include": ["extensions"]
+}
