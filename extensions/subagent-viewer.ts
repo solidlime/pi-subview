@@ -26,7 +26,7 @@
 // == ライフサイクル ==
 // extensions.md:「factory でプロセス/ソケット/watcher/タイマーを起動しない」。
 // 本拡張のポーリングタイマーはコマンドハンドラ（= custom() の factory、コマンド実行中）で
-// 起動し、dispose() で冪等に停止する。session_start では短いヒント widget を置くだけ。
+// 起動し、dispose() で冪等に停止する。常駐 widget は置かない（ユーザー指定: 常駐表示不要）。
 //
 // == 検証 ==
 // `/subview-selftest [runDir]` が events.jsonl を読み取り専用で触り、パーサの assert を出す。
@@ -67,7 +67,7 @@ const ALL_LIST_LIMIT = 200;
 
 const TOTAL_ROWS = 36; // 設計書 §1.5 の行バジェット
 const LIST_ROWS = 5;
-const STREAM_ROWS = TOTAL_ROWS - LIST_ROWS - 5; // 26（chrome 3行 + 区切り2行 + ラン一覧 LIST_ROWS を引いて TOTAL_ROWS を維持）
+const STREAM_ROWS = TOTAL_ROWS - LIST_ROWS - 6; // 25（chrome 3行 + 区切り2行 + ラン一覧 LIST_ROWS + 下罫線1行を引いて TOTAL_ROWS を維持）
 
 const TERMINAL_STATES = new Set(["complete", "failed", "stopped", "rejected"]);
 
@@ -856,6 +856,9 @@ class SubagentViewerComponent {
 
     const body = this.view === "help" ? HELP_LINES : this.view === "info" ? this.infoLines() : this.streamWindow();
     for (let i = 0; i < STREAM_ROWS; i += 1) out.push(body[i] ?? "");
+    // 下罫線（最終行を常に非空にする）。pi-web の custom UI は末尾の空行をトリミングして
+    // ボックス高を決めるため、これが無いと内容が少ないとき一覧/ストリームが縮んで見える。
+    out.push(dim("─".repeat(this.width + 8)));
     return out;
   }
 
@@ -1312,13 +1315,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    // 短いヒントだけ。タイマーもプロセスも起動しない（extensions.md:58）。
-    // viewer 本体の起動は /subview（コマンドハンドラ）だけ。
+    // 常駐 widget は置かない（ユーザー指定: 常駐表示不要・ペーン高変動の防止）。
+    // viewer 本体の起動は /subview（コマンドハンドラ）だけ。タイマーもプロセスも起動しない（extensions.md:58）。
     try {
-      const { runs, rootMissing } = discoverRuns(false);
-      const active = runs.filter((r) => r.active).length;
-      const line = `subagent-viewer: /subview で thinking/ツールを全画面表示  (${runs.length} runs / ${active} active)${rootMissing ? "  root not found" : ""}`;
-      ctx.ui.setWidget(WIDGET_KEY, [truncateToWidth(line, 160, "", false)]);
+      ctx.ui.setWidget(WIDGET_KEY, []); // 既存セッションの残置 widget をクリア
     } catch {
       /* headless / no-op UI */
     }
